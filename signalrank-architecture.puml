@@ -1,0 +1,81 @@
+@startuml SignalRank Architecture
+
+title SignalRank — компонентная архитектура
+
+skinparam backgroundColor transparent
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam packageStyle rectangle
+skinparam defaultFontName Arial
+skinparam ArrowColor #4B5563
+skinparam component {
+  BackgroundColor #EEF2FF
+  BorderColor #6366F1
+}
+skinparam database {
+  BackgroundColor #ECFDF5
+  BorderColor #10B981
+}
+skinparam queue {
+  BackgroundColor #FFF7ED
+  BorderColor #F97316
+}
+
+actor "API client\n(generator / user)" as client
+
+package "SignalRank application" {
+  component "REST API\nFastAPI" as api
+  component "Outbox publisher" as outbox
+  component "Celery workers\nranking · risk · LLM" as celery
+  component "Projection service\nfeed & review read models" as projection
+  component "Audit consumer" as audit
+}
+
+database "PostgreSQL\nsource of truth\n+ transactional outbox" as pg
+queue "RabbitMQ\nsocial.events\ntopic exchange" as rabbit
+database "Redis\ncache · rate limits\nlocks · task results" as redis
+
+component "Prometheus" as prometheus #FEF3C7
+component "Grafana\ndashboards & alerts" as grafana #FDF2F8
+
+client --> api : REST / OpenAPI
+api --> pg : write domain data\nand outbox event atomically
+outbox --> pg : read unpublished outbox events
+outbox --> rabbit : publish domain event
+
+rabbit --> celery : ranking / risk / LLM jobs
+rabbit --> projection : activity.* / score.*
+rabbit --> audit : all events
+
+celery --> pg : score snapshots\nrisk decisions
+celery --> redis : cache, locks, result backend
+projection --> pg : feed & review projections
+projection --> redis : invalidate / warm feed cache
+
+api --> prometheus : HTTP + business metrics
+celery --> prometheus : task + business metrics
+rabbit --> prometheus : broker metrics
+redis --> prometheus : Redis metrics
+pg --> prometheus : PostgreSQL metrics
+prometheus --> grafana : PromQL
+
+note right of rabbit
+  Domain events are delivered
+  at least once. Consumers are
+  idempotent by event_id.
+end note
+
+note bottom of pg
+  activity_events is append-only
+  and partitioned by time.
+end note
+
+legend right
+  <b>Event flow</b>
+  1. API writes data and outbox in one transaction.
+  2. Publisher sends the event to RabbitMQ.
+  3. Celery and independent consumers process it.
+  4. Prometheus gathers technical and business metrics.
+endlegend
+
+@enduml
